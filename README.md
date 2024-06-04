@@ -1,4 +1,4 @@
-# 🦜️🔗LangChain Rust
+
 
 [![Latest Version]][crates.io]
 
