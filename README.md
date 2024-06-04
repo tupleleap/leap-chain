@@ -11,8 +11,6 @@
 
 ## 🤔 What is this?
 
-This is the Rust language implementation of [LangChain](https://github.com/langchain-ai/langchain).
-
 ## Current Features
 
 - LLMs
