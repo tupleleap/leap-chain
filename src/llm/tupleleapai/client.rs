@@ -3,6 +3,7 @@ use std::pin::Pin;
 use crate::language_models::llm::LLM;
 use crate::language_models::GenerateResult;
 use crate::language_models::LLMError;
+use crate::language_models::TokenUsage;
 use crate::schemas::Message;
 use crate::schemas::MessageType;
 use crate::schemas::StreamData;
@@ -86,10 +87,14 @@ impl LLM for Tupleleap {
                 .into())
             }
         };
-        // TODO: discuss tuple leap connector does not return this information.
+
         Ok(GenerateResult {
             generation: generation.to_string(),
-            tokens: None,
+            tokens: Some(TokenUsage {
+                prompt_tokens: result.usage.prompt_tokens as u32,
+                completion_tokens: result.usage.completion_tokens as u32,
+                total_tokens: result.usage.total_tokens as u32,
+            }),
         })
     }
 
