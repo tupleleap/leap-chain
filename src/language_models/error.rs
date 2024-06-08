@@ -1,4 +1,5 @@
 use async_openai::error::OpenAIError;
+use leap_connect::v1::error::APIError;
 #[cfg(feature = "ollama")]
 use ollama_rs::error::OllamaError;
 use reqwest::Error as ReqwestError;
@@ -40,4 +41,7 @@ pub enum LLMError {
 
     #[error("Error: {0}")]
     OtherError(String),
+
+    #[error("Tupleleap error: {0}")]
+    TupleleapError(#[from] APIError),
 }
