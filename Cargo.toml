@@ -76,9 +76,9 @@ ollama-rs = { version = "0.1.9", optional = true, features = [
     "chat-history",
 ] }
 
-# leap-connect = { git = "https://github.com/tupleleap/leap-connect.git", version = "1.0.0" }
+leap-connect = { git = "https://github.com/tupleleap/leap-connect.git", version = "1.0.0" }
 # Enable this for development purposes.
-leap-connect = { path = "../leap-connect" }
+# leap-connect = { path = "../leap-connect" }
 [features]
 default = []
 postgres = ["pgvector", "sqlx", "uuid"]
