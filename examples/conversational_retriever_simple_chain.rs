@@ -1,11 +1,11 @@
-use std::error::Error;
+use std::{env, error::Error};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use leap_chain::{
     chain::{Chain, ConversationalRetrieverChainBuilder},
     fmt_message, fmt_template,
-    llm::{OpenAI, OpenAIModel},
+    llm::tupleleapai::client::Tupleleap,
     memory::SimpleMemory,
     message_formatter,
     prompt::HumanMessagePromptTemplate,
@@ -13,6 +13,7 @@ use leap_chain::{
     schemas::{Document, Message, Retriever},
     template_jinja2,
 };
+use leap_connect::v1::api::Client as leap_client;
 
 struct RetrieverMock {}
 #[async_trait]
@@ -43,7 +44,8 @@ impl Retriever for RetrieverMock {
 }
 #[tokio::main]
 async fn main() {
-    let llm = OpenAI::default().with_model(OpenAIModel::Gpt35.to_string());
+    let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+    let llm = Tupleleap::new(client, "mistral".into());
     let prompt=message_formatter![
                     fmt_message!(Message::new_system_message("You are a helpful assistant")),
                     fmt_template!(HumanMessagePromptTemplate::new(

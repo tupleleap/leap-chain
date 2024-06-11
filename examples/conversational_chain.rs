@@ -1,10 +1,8 @@
-use std::io::{stdout, Write};
-
 use futures_util::StreamExt;
 use leap_chain::{
     chain::{builder::ConversationalChainBuilder, Chain},
+    llm::tupleleapai::client::Tupleleap,
     // fmt_message, fmt_template,
-    llm::openai::{OpenAI, OpenAIModel},
     memory::SimpleMemory,
     // message_formatter,
     // prompt::HumanMessagePromptTemplate,
@@ -12,10 +10,16 @@ use leap_chain::{
     // schemas::Message,
     // template_fstring,
 };
+use leap_connect::v1::api::Client as leap_client;
+use std::{
+    env,
+    io::{stdout, Write},
+};
 
 #[tokio::main]
 async fn main() {
-    let llm = OpenAI::default().with_model(OpenAIModel::Gpt35);
+    let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+    let llm = Tupleleap::new(client, "mistral".into());
     //We initialise a simple memory,by default conveational chain have this memory, but we
     //initiliase it as an example, if you dont want to have memory use DummyMemory
     let memory = SimpleMemory::new();

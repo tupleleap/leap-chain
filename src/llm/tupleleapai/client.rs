@@ -144,15 +144,33 @@ mod tests {
        },
     */
     use super::*;
+    use crate::llm::tupleleapai::client::Tupleleap;
     use leap_connect::v1::api::Client;
     use std::env;
-
-    use crate::llm::tupleleapai::client::Tupleleap;
+    use tokio::io::AsyncWriteExt;
+    use tokio_stream::StreamExt;
 
     #[tokio::test]
     async fn test_generate() {
         let client = Client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
         let tupleleap = Tupleleap::new(client, "mistral".into());
+        let response = tupleleap.invoke("Hey bro whatsup").await.unwrap();
+        println!("{}", response);
+    }
+
+    #[tokio::test]
+    async fn test_stream() {
+        let client = Client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        let tupleleap = Tupleleap::new(client, "mistral".into());
+        let message = Message::new_human_message("Why does water boil at 100 degrees?");
+        let mut stream = tupleleap.stream(&vec![message]).await.unwrap();
+        let mut stdout = tokio::io::stdout();
+        while let Some(res) = stream.next().await {
+            let data = res.unwrap();
+            stdout.write_all(data.content.as_bytes()).await.unwrap();
+        }
+        stdout.write(b"\n").await.unwrap();
+        stdout.flush().await.unwrap();
         let response = tupleleap.invoke("Hey bro whatsup").await.unwrap();
         println!("{}", response);
     }

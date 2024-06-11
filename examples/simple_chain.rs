@@ -1,10 +1,17 @@
 use leap_chain::{
     chain::{Chain, LLMChainBuilder},
-    llm::openai::{OpenAI, OpenAIModel},
+    llm::{
+        client::Tupleleap,
+        openai::{OpenAI, OpenAIModel},
+    },
     prompt::HumanMessagePromptTemplate,
     prompt_args, template_jinja2,
 };
-use std::io::{self, Write}; // Include io Library for terminal input
+use leap_connect::v1::api::Client as leap_client;
+use std::{
+    env,
+    io::{self, Write},
+}; // Include io Library for terminal input
 
 #[tokio::main]
 async fn main() {
@@ -13,7 +20,8 @@ async fn main() {
         "producto"
     ));
 
-    let llm = OpenAI::default().with_model(OpenAIModel::Gpt35);
+    let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+    let llm = Tupleleap::new(client, "mistral".into());
     let chain = LLMChainBuilder::new()
         .prompt(prompt)
         .llm(llm)
