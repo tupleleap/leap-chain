@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 
 use crate::language_models::llm::LLM;
@@ -15,6 +16,7 @@ use leap_connect::v1::chat_completion::ChatCompletionMessage;
 use leap_connect::v1::chat_completion::ChatCompletionRequest;
 use leap_connect::v1::common::MISTRAL;
 use leap_connect::v1::error::APIError;
+use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct Tupleleap {
@@ -100,13 +102,31 @@ impl LLM for Tupleleap {
 
     async fn stream(
         &self,
-        _: &[Message],
+        messages: &[Message],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamData, LLMError>> + Send>>, LLMError> {
-        //TODO this is not supported.
-        Err(APIError {
-            message: "not implemented".to_string(),
-        }
-        .into())
+        let request = self.generate_request(messages);
+        let result_stream = self.client.chat_completion_stream(request).await?;
+
+        let stream = result_stream.map(|data| {
+            let choice = &data.choices[0];
+            let content = match &choice.delta.content {
+                Some(msg) => msg,
+                None => {
+                    return Err(LLMError::ContentNotFound(
+                        "No message in response".to_string(),
+                    ));
+                }
+            };
+            Ok(StreamData::new(
+                serde_json::to_value(HashMap::from([
+                    ("created", data.created.to_string()),
+                    ("model", data.model),
+                ]))
+                .unwrap_or_default(),
+                content,
+            ))
+        });
+        Ok(Box::pin(stream))
     }
 }
 
