@@ -1,24 +1,25 @@
+use std::env;
+
 use leap_chain::{
     chain::{Chain, LLMChainBuilder},
     fmt_message, fmt_placeholder, fmt_template,
     language_models::llm::LLM,
-    llm::openai::OpenAI,
+    llm::client::Tupleleap,
     message_formatter,
     prompt::HumanMessagePromptTemplate,
     prompt_args,
     schemas::messages::Message,
     template_fstring,
 };
+use leap_connect::v1::api::Client as leap_client;
 
 #[tokio::main]
 async fn main() {
-    //We can then initialize the model:
-    // If you'd prefer not to set an environment variable you can pass the key in directly via the `openai_api_key` named parameter when initiating the OpenAI LLM class:
-    //let open_ai = OpenAI::default().with_api_key("...");
-    let open_ai = OpenAI::default();
+    let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+    let llm = Tupleleap::new(client, "mistral".into());
 
     //Once you've installed and initialized the LLM of your choice, we can try using it! Let's ask it what LangSmith is - this is something that wasn't present in the training data so it shouldn't have a very good response.
-    let resp = open_ai.invoke("What is rust").await.unwrap();
+    let resp = llm.invoke("What is rust").await.unwrap();
     println!("{}", resp);
 
     // We can also guide it's response with a prompt template. Prompt templates are used to convert raw user input to a better input to the LLM.
@@ -35,7 +36,7 @@ async fn main() {
 
     let chain = LLMChainBuilder::new()
         .prompt(prompt)
-        .llm(open_ai.clone())
+        .llm(llm.clone())
         .build()
         .unwrap();
 
@@ -67,7 +68,7 @@ async fn main() {
 
     let chain = LLMChainBuilder::new()
         .prompt(prompt)
-        .llm(open_ai)
+        .llm(llm)
         .build()
         .unwrap();
     match chain

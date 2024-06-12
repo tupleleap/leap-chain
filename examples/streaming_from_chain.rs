@@ -1,18 +1,22 @@
+use std::env;
+
 use futures::StreamExt;
 use leap_chain::{
     chain::{Chain, LLMChainBuilder},
     fmt_message, fmt_template,
-    llm::openai::OpenAI,
+    llm::{client::Tupleleap, openai::OpenAI},
     message_formatter,
     prompt::HumanMessagePromptTemplate,
     prompt_args,
     schemas::messages::Message,
     template_fstring,
 };
+use leap_connect::v1::api::Client as leap_client;
 
 #[tokio::main]
 async fn main() {
-    let open_ai = OpenAI::default();
+    let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+    let llm = Tupleleap::new(client, "mistral".into());
 
     let prompt = message_formatter![
         fmt_message!(Message::new_system_message(
@@ -25,7 +29,7 @@ async fn main() {
 
     let chain = LLMChainBuilder::new()
         .prompt(prompt)
-        .llm(open_ai.clone())
+        .llm(llm .clone())
         .build()
         .unwrap();
 
