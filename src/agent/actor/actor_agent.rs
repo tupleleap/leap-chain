@@ -61,8 +61,6 @@ enum ActorMessage {
 impl ractor::Message for ActorMessage {}
 
 struct AgentArguments {
-    before: VecDeque<ActorRef<ActorMessage>>,
-    after: VecDeque<ActorRef<ActorMessage>>,
     before_name: VecDeque<String>,
     after_name: VecDeque<String>,
     agent: Box<dyn Agent>,
@@ -80,8 +78,6 @@ struct AgentState {
     backlog: VecDeque<ActorMessage>,
     before_name: VecDeque<String>,
     after_name: VecDeque<String>,
-    before: VecDeque<ActorRef<ActorMessage>>,
-    after: VecDeque<ActorRef<ActorMessage>>,
     metrics: AgentMetrics,
 }
 
@@ -159,8 +155,6 @@ impl Actor for AgentActor {
             owned_by: myself,
             backlog: VecDeque::new(),
             completed: false,
-            before: args.before,
-            after: args.after,
             before_name: args.before_name,
             after_name: args.after_name,
             metrics: AgentMetrics {
@@ -225,14 +219,12 @@ impl Actor for AgentActor {
 // }
 
 struct AgentSystem {
-    //     // start: Option<ActorRef<ActorMessage>>,
-    //     // end: Option<ActorRef<ActorMessage>>,
-    //     all_handles: tokio::task::JoinSet<()>,
-    //     nodes: HashMap<ActorRef<()>, VecDeque<ActorRef<()>>>,
+    // TODO remove VecDeque and make it a vector.
     nodes_after: HashMap<String, VecDeque<String>>,
     nodes_before: HashMap<String, VecDeque<String>>,
-    agentMap: HashMap<String, Box<dyn Agent>>,
+    agent_map: HashMap<String, Box<dyn Agent>>,
 }
+
 const START_NODE: &str = "start";
 const END_NODE: &str = "end";
 
@@ -246,64 +238,85 @@ impl AgentSystem {
         Self {
             nodes_after,
             nodes_before,
-            agentMap: HashMap::new(),
+            agent_map: HashMap::new(),
         }
     }
 
-    fn add_agent(&mut self, name: String, agent: Box<dyn Agent>) -> &mut Self {
-        if self.nodes_after.contains_key(&name) {
+    fn add_agent(&mut self, name: &str, agent: Box<dyn Agent>) -> &mut Self {
+        if self.nodes_after.contains_key(name) {
             panic!("Agent with this name {} already exists", name);
         } else {
-            self.add_entry(START_NODE.into(), name.clone());
-            self.agentMap.insert(name, agent);
+            self.add_entry(START_NODE.into(), name);
+            self.agent_map.insert(name.into(), agent);
         }
         self
     }
 
     fn add_child(
         &mut self,
-        parent_name: String,
-        child_name: String,
+        parent_name: &str,
+        child_name: &str,
         agent: Box<dyn Agent>,
     ) -> &mut Self {
-        if !self.nodes_after.contains_key(&parent_name) {
+        if !self.nodes_after.contains_key(parent_name) {
             panic!("Agent with parent name {} does not exist", parent_name);
         }
-        if self.nodes_after.contains_key(&child_name) {
-            panic!("Agent with name {} already exists", child_name);
-        }
-        self.add_entry(parent_name, child_name.clone());
-        self.agentMap.insert(child_name.clone(), agent);
+        self.add_entry(parent_name, child_name);
+        self.agent_map.insert(child_name.into(), agent);
 
         self
     }
 
+    // build the agent system.
+    fn build(&mut self) -> &mut Self {
+        self.add_end_entry();
+        self.start();
+        self
+    }
+
+    // Spawn all the actors and trigger start
+    async fn start(&mut self) -> &Self {
+        // for agent_name in self.nodes_after.keys() {
+        //     let (actor, handle) = Actor::spawn(
+        //         Some(agent_name.into()),
+        //         AgentActor {},
+        //         AgentArguments {
+        //             after_name: VecDeque::new(),
+        //             before_name: VecDeque::new(),
+        //             agent: agent_box,
+        //         },
+        //     )
+        //     .await
+        //     .expect("failed to create agent actor");
+        // }
+        self
+    }
     // helper method to add entry.
-    fn add_entry(&mut self, parent: String, child: String) {
+    fn add_entry(&mut self, parent: &str, child: &str) {
         // add entry for child
-        self.nodes_after.insert(child.clone(), VecDeque::new());
+        self.nodes_after.insert(child.into(), VecDeque::new());
 
         self.nodes_before
-            .entry(child.clone())
+            .entry(child.into())
             .or_insert_with(|| VecDeque::new())
-            .push_back(parent.clone());
+            .push_back(parent.into());
 
         // add entry for parent
         self.nodes_after
-            .entry(parent.clone())
-            .and_modify(|v| v.push_back(child.clone()));
+            .entry(parent.into())
+            .and_modify(|v| v.push_back(child.into()));
     }
 
     // helper method to add end entry
     fn add_end_entry(&mut self) {
-        let mut end_nodes: Vec<String> = Vec::new();
+        let mut end_nodes = Vec::new();
         for (k, v) in &self.nodes_after {
             if v.len() == 0 {
-                end_nodes.push(k.into())
+                end_nodes.push(k.clone())
             }
         }
         for name in end_nodes.drain(..) {
-            self.add_entry(name, END_NODE.into());
+            let _ = &mut self.add_entry(&name, END_NODE);
         }
     }
 }
@@ -312,6 +325,7 @@ impl AgentSystem {
 mod tests {
     use std::{error::Error, sync::Arc};
 
+    use ollama_rs::models::create;
     use ractor::registry;
     use serde_json::Value;
 
@@ -337,6 +351,52 @@ mod tests {
             Ok("25".to_string())
         }
     }
+
+    fn create_agent() -> Box<dyn Agent> {
+        let llm = Ollama::default().with_model("llama3");
+        let memory = SimpleMemory::new();
+        let tool_calc = Calc {};
+        let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
+            .tools(&[Arc::new(tool_calc)])
+            .build(llm)
+            .unwrap();
+        return Box::new(agent);
+    }
+
+    #[tokio::test]
+    async fn test_agent_system_dag1() {
+        let mut agent_system = AgentSystem::new();
+        agent_system
+            .add_agent("A", create_agent())
+            .add_child("A", "B", create_agent())
+            .add_child("A", "C", create_agent())
+            .add_child("B", "D", create_agent())
+            .add_child("C", "D", create_agent())
+            .build();
+
+        let mut exp_nodes_after: HashMap<String, VecDeque<String>> = HashMap::new();
+        exp_nodes_after.insert("D".into(), VecDeque::from(vec![END_NODE.into()]));
+        exp_nodes_after.insert("A".into(), VecDeque::from(vec!["B".into(), "C".into()]));
+        exp_nodes_after.insert("C".into(), VecDeque::from(vec!["D".into()]));
+        exp_nodes_after.insert(END_NODE.into(), VecDeque::from(vec![]));
+        exp_nodes_after.insert("B".into(), VecDeque::from(vec!["D".into()]));
+        exp_nodes_after.insert(START_NODE.into(), VecDeque::from(vec!["A".into()]));
+
+        let mut exp_nodes_before: HashMap<String, VecDeque<String>> = HashMap::new();
+        exp_nodes_before.insert(END_NODE.into(), VecDeque::from(vec!["D".into()]));
+        exp_nodes_before.insert("D".into(), VecDeque::from(vec!["B".into(), "C".into()]));
+        exp_nodes_before.insert("C".into(), VecDeque::from(vec!["A".into()]));
+        exp_nodes_before.insert("A".into(), VecDeque::from(vec![START_NODE.into()]));
+        exp_nodes_before.insert("B".into(), VecDeque::from(vec!["A".into()]));
+
+        assert_eq!(agent_system.nodes_after, exp_nodes_after);
+        assert_eq!(agent_system.nodes_before, exp_nodes_before);
+        println!(
+            "{:?}, {:?}",
+            agent_system.nodes_after, agent_system.nodes_before
+        );
+    }
+
     #[tokio::test]
     async fn test_agent_integration() {
         SimpleLogger::new().init().unwrap();
@@ -357,8 +417,6 @@ mod tests {
             Some("agentA".into()),
             AgentActor {},
             AgentArguments {
-                after: VecDeque::new(),
-                before: VecDeque::new(),
                 after_name: VecDeque::new(),
                 before_name: VecDeque::new(),
                 agent: Box::new(agent),
@@ -401,8 +459,6 @@ mod tests {
                 Some(actor_names[i].into()),
                 AgentActor {},
                 AgentArguments {
-                    after: VecDeque::new(),
-                    before: VecDeque::new(),
                     after_name: VecDeque::new(),
                     before_name: VecDeque::new(),
                     agent: agent_box,
