@@ -5,13 +5,17 @@ use std::{
     hash::Hash,
 };
 
+use futures::future::Join;
 use log::info;
 use ractor::{
     async_trait, cast, rpc::cast, Actor, ActorId, ActorName, ActorProcessingErr, ActorRef,
     RpcReplyPort,
 };
 use simple_logger::SimpleLogger;
-use tokio::time::{Duration, Instant};
+use tokio::{
+    task::JoinError,
+    time::{Duration, Instant},
+};
 
 use crate::agent::{agent, Agent};
 
@@ -223,6 +227,8 @@ struct AgentSystem {
     nodes_after: HashMap<String, VecDeque<String>>,
     nodes_before: HashMap<String, VecDeque<String>>,
     agent_map: HashMap<String, Box<dyn Agent>>,
+    actors: HashMap<String, ActorRef<ActorMessage>>,
+    all_handles: tokio::task::JoinSet<Result<(), JoinError>>,
 }
 
 const START_NODE: &str = "start";
@@ -239,6 +245,8 @@ impl AgentSystem {
             nodes_after,
             nodes_before,
             agent_map: HashMap::new(),
+            actors: HashMap::new(),
+            all_handles: tokio::task::JoinSet::new(),
         }
     }
 
@@ -276,19 +284,22 @@ impl AgentSystem {
 
     // Spawn all the actors and trigger start
     async fn start(&mut self) -> &Self {
-        // for agent_name in self.nodes_after.keys() {
-        //     let (actor, handle) = Actor::spawn(
-        //         Some(agent_name.into()),
-        //         AgentActor {},
-        //         AgentArguments {
-        //             after_name: VecDeque::new(),
-        //             before_name: VecDeque::new(),
-        //             agent: agent_box,
-        //         },
-        //     )
-        //     .await
-        //     .expect("failed to create agent actor");
-        // }
+        for (agent_name, agent) in self.agent_map.drain() {
+            let (actor, handle) = Actor::spawn(
+                Some(agent_name.clone()),
+                AgentActor {},
+                AgentArguments {
+                    after_name: self.nodes_after.get(&agent_name).unwrap().clone(),
+                    before_name: self.nodes_before.get(&agent_name).unwrap().clone(),
+                    agent: agent,
+                },
+            )
+            .await
+            .expect("failed to create agent actor");
+            self.actors.insert(agent_name, actor);
+            self.all_handles.spawn(handle);
+        }
+
         self
     }
     // helper method to add entry.
@@ -395,6 +406,50 @@ mod tests {
             "{:?}, {:?}",
             agent_system.nodes_after, agent_system.nodes_before
         );
+    }
+
+    #[tokio::test]
+    async fn test_agent_system_start_single() {
+        SimpleLogger::new().init().unwrap();
+        let run_time = Duration::from_secs(5);
+
+        let llm = Ollama::default().with_model("llama3");
+        let memory = SimpleMemory::new();
+        let tool_calc = Calc {};
+        let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
+            .tools(&[Arc::new(tool_calc)])
+            .build(llm)
+            .unwrap();
+        let input_variables = prompt_args! {
+            "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
+        };
+
+        let mut wrapper = AgentSystem::new();
+        let agent_system = wrapper
+            .add_agent("A", Box::new(agent))
+            .build()
+            .start()
+            .await;
+        // let (actor, handle) = Actor::spawn(
+        //     Some("agentA".into()),
+        //     AgentActor {},
+        //     AgentArguments {
+        //         after_name: VecDeque::new(),
+        //         before_name: VecDeque::new(),
+        //         agent: Box::new(agent),
+        //     },
+        // )
+        // .await
+        // .expect("failed to create agent actor");
+        // let r = registry::where_is("agentA".into());
+        // if let Some(a_ref) = r {
+        //     // let t = cast!(a_ref, ActorMessage::StartWork(a_ref.get_id()));
+        //     let _ = a_ref.send_message(ActorMessage::StartWork(a_ref.get_id()));
+        //     let _ = a_ref.send_message(ActorMessage::EndWork(a_ref.get_id()));
+        // }
+
+        // tokio::time::sleep(run_time).await;
+        // actor.stop(None)
     }
 
     #[tokio::test]
