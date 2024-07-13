@@ -8,9 +8,10 @@ use std::{
 use futures::future::Join;
 use log::info;
 use ractor::{
-    async_trait, cast, rpc::cast, Actor, ActorId, ActorName, ActorProcessingErr, ActorRef,
-    RpcReplyPort,
+    async_trait, cast, registry, rpc::cast, Actor, ActorId, ActorName, ActorProcessingErr,
+    ActorRef, RpcReplyPort,
 };
+use serde::de::IntoDeserializer;
 use simple_logger::SimpleLogger;
 use tokio::{
     task::JoinError,
@@ -65,9 +66,10 @@ enum ActorMessage {
 impl ractor::Message for ActorMessage {}
 
 struct AgentArguments {
+    agent_name: String,
     before_name: VecDeque<String>,
     after_name: VecDeque<String>,
-    agent: Box<dyn Agent>,
+    agent: Option<Box<dyn Agent>>,
 }
 #[derive(Clone, Debug)]
 struct AgentMetrics {
@@ -77,6 +79,7 @@ struct AgentMetrics {
 }
 
 struct AgentState {
+    agent_name: String,
     completed: bool,
     owned_by: ActorRef<ActorMessage>,
     backlog: VecDeque<ActorMessage>,
@@ -86,6 +89,94 @@ struct AgentState {
 }
 
 struct AgentActor {}
+
+// Control Actor acts as the start and end agents.
+// TODO: update it
+struct ControlAgent {}
+
+#[async_trait]
+impl Actor for ControlAgent {
+    type Msg = ActorMessage;
+    type State = AgentState;
+    type Arguments = AgentArguments;
+
+    async fn pre_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        args: AgentArguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        log::info!("Pre start api invoked on Control Agent");
+        Ok(Self::State {
+            agent_name: args.agent_name,
+            owned_by: myself,
+            backlog: VecDeque::new(),
+            completed: false,
+            before_name: args.before_name,
+            after_name: args.after_name,
+            metrics: AgentMetrics {
+                state_change_count: 0,
+            },
+        })
+    }
+
+    async fn handle(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        log::info!(
+            "handle invoked {}",
+            myself.get_name().unwrap_or("no name".to_string())
+        );
+        if &state.agent_name == START_NODE {
+            log::info!("Agent type is Start Node");
+            match &message {
+                ActorMessage::StartWork(who) => {
+                    if state.owned_by.get_id() == *who {
+                        log::info!("Staring control node");
+                        for next_actor in &state.after_name {
+                            let res = registry::where_is(next_actor.into());
+                            if let Some(actor_ref) = res {
+                                actor_ref
+                                    .send_message(ActorMessage::StartWork(actor_ref.get_id()))
+                                    .expect("Failed to send message to next actor");
+                            }
+                        }
+                    } else {
+                        log::info!(
+                            "ERROR Recieved StartWork {:?}. Real Owner is {:?}",
+                            who,
+                            state.owned_by.get_id()
+                        );
+                    }
+                }
+                _default => {
+                    log::info!("Unknown message is recieved, ignoring it...");
+                }
+            }
+        } else if &state.agent_name == END_NODE {
+            log::info!("Agent type is End Node");
+        } else {
+            panic!("Invalid agent name");
+        }
+        // let mut maybe_unhandled = self.handle_internal(&myself, message, state);
+        // if let Some(message) = maybe_unhandled {
+        //     state.backlog.push_back(message);
+        // } else {
+        //     // we handled the message, check the queue for any work to dequeue and handle
+        //     while !state.backlog.is_empty() && maybe_unhandled.is_none() {
+        //         let head = state.backlog.pop_front().unwrap();
+        //         maybe_unhandled = self.handle_internal(&myself, head, state);
+        //     }
+        //     // put the first unhandled msg back to the front of the queue
+        //     if let Some(msg) = maybe_unhandled {
+        //         state.backlog.push_front(msg);
+        //     }
+        // }
+        Ok(())
+    }
+}
 
 impl AgentActor {
     fn handle_internal(
@@ -156,6 +247,7 @@ impl Actor for AgentActor {
     ) -> Result<Self::State, ActorProcessingErr> {
         log::info!("Pre start api invoked");
         Ok(Self::State {
+            agent_name: args.agent_name,
             owned_by: myself,
             backlog: VecDeque::new(),
             completed: false,
@@ -291,7 +383,8 @@ impl AgentSystem {
                 AgentArguments {
                     after_name: self.nodes_after.get(&agent_name).unwrap().clone(),
                     before_name: self.nodes_before.get(&agent_name).unwrap().clone(),
-                    agent: agent,
+                    agent: Some(agent),
+                    agent_name: agent_name.clone(),
                 },
             )
             .await
@@ -299,7 +392,40 @@ impl AgentSystem {
             self.actors.insert(agent_name, actor);
             self.all_handles.spawn(handle);
         }
+        // Add start and end control agents
+        let (actor, handle) = Actor::spawn(
+            Some(START_NODE.into()),
+            ControlAgent {},
+            AgentArguments {
+                after_name: self.nodes_after.get(START_NODE).unwrap().clone(),
+                before_name: VecDeque::new(),
+                agent: None,
+                agent_name: START_NODE.into(),
+            },
+        )
+        .await
+        .expect("failed to create agent actor");
+        self.actors.insert(START_NODE.into(), actor);
+        self.all_handles.spawn(handle);
 
+        let (actor, handle) = Actor::spawn(
+            Some(END_NODE.into()),
+            ControlAgent {},
+            AgentArguments {
+                after_name: self.nodes_after.get(END_NODE).unwrap().clone(),
+                before_name: self.nodes_before.get(END_NODE).unwrap().clone(),
+                agent: None,
+                agent_name: END_NODE.into(),
+            },
+        )
+        .await
+        .expect("failed to create agent actor");
+        self.actors.insert(END_NODE.into(), actor);
+        self.all_handles.spawn(handle);
+
+        let t = self.actors.get(START_NODE).unwrap();
+        cast!(t, ActorMessage::StartWork(t.get_id()))
+            .expect("Failed to trigger the Control Start node");
         self
     }
     // helper method to add entry.
@@ -338,6 +464,7 @@ mod tests {
 
     use ollama_rs::models::create;
     use ractor::registry;
+    use serde::de::IntoDeserializer;
     use serde_json::Value;
 
     use crate::llm::ollama::client::Ollama;
@@ -448,7 +575,7 @@ mod tests {
         //     let _ = a_ref.send_message(ActorMessage::EndWork(a_ref.get_id()));
         // }
 
-        // tokio::time::sleep(run_time).await;
+        tokio::time::sleep(run_time).await;
         // actor.stop(None)
     }
 
@@ -474,7 +601,8 @@ mod tests {
             AgentArguments {
                 after_name: VecDeque::new(),
                 before_name: VecDeque::new(),
-                agent: Box::new(agent),
+                agent: Some(Box::new(agent)),
+                agent_name: "agentA".into(),
             },
         )
         .await
@@ -516,7 +644,8 @@ mod tests {
                 AgentArguments {
                     after_name: VecDeque::new(),
                     before_name: VecDeque::new(),
-                    agent: agent_box,
+                    agent: Some(agent_box),
+                    agent_name: actor_names[i].into(),
                 },
             )
             .await
