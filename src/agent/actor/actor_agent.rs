@@ -23,11 +23,11 @@ use crate::agent::{agent, Agent};
 // ============================ Agent Actor ============================ //
 
 enum ActorMessage {
-    StartWork(String),
+    StartWork(String, String),
 
-    EndWork(String),
+    EndWork(String, String),
 
-    RestartWork(String),
+    RestartWork(String, String),
 
     GetStatus(String),
     CurrentStatus(String),
@@ -84,7 +84,7 @@ struct AgentState {
 struct AgentActor {}
 
 impl AgentActor {
-    fn start_next_actors(&self, actor_name: &str, actor_id: ActorId, after_name: &HashSet<String>) {
+    fn start_next_actors(&self, actor_name: &str, result: &str, after_name: &HashSet<String>) {
         for next_actor in after_name {
             let res = registry::where_is(next_actor.into());
             if let Some(actor_ref) = res {
@@ -94,7 +94,7 @@ impl AgentActor {
                     actor_ref.get_name().unwrap()
                 );
                 actor_ref
-                    .send_message(ActorMessage::StartWork(actor_name.into()))
+                    .send_message(ActorMessage::StartWork(actor_name.into(), result.into()))
                     .expect("Failed to send message to next actor");
             }
         }
@@ -108,7 +108,7 @@ impl AgentActor {
     ) -> Option<ActorMessage> {
         let name = myself.get_name().unwrap();
         match &message {
-            ActorMessage::StartWork(from) => {
+            ActorMessage::StartWork(from, input) => {
                 log::info!("Start Work message received for actor {} ", name);
                 if !state.before_name.remove(from) {
                     log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
@@ -120,23 +120,27 @@ impl AgentActor {
                     log::debug!("Actor {}: All the before actors not completed", name);
                     return None;
                 }
-
+                // TODO: Invoke agent.
+                /*
+                 let result = self.call(input_variables).await?;
+                Ok(result.generation)
+                */
                 log::debug!(
                     "Processing complete for Actor {}, Initimating next actors",
                     name
                 );
-                self.start_next_actors(&name, myself.get_id(), &state.after_name);
+                self.start_next_actors(&name, "", &state.after_name);
                 log::debug!("Stopping Actor {}", name);
                 myself.stop(Some("pipeline completed".into()));
                 None
             }
-            ActorMessage::EndWork(from) => {
+            ActorMessage::EndWork(from, _) => {
                 log::info!("End work for Actor {}", name);
                 None
             }
-            ActorMessage::RestartWork(from) => {
+            ActorMessage::RestartWork(from, input) => {
                 log::info!("Restarting for  Actor {}", name);
-                let _ = cast(myself, ActorMessage::StartWork(name));
+                let _ = cast(myself, ActorMessage::StartWork(name, input.into()));
 
                 None
             }
@@ -148,12 +152,10 @@ impl AgentActor {
     }
 }
 
-// Control Actor acts as the start and end agents.
-// TODO: update it
 struct ControlAgent {}
 
 impl ControlAgent {
-    fn start_next_actors(&self, actor_name: &str, actor_id: ActorId, after_name: &HashSet<String>) {
+    fn start_next_actors(&self, actor_name: &str, input: &str, after_name: &HashSet<String>) {
         for next_actor in after_name {
             let res = registry::where_is(next_actor.into());
             if let Some(actor_ref) = res {
@@ -163,7 +165,7 @@ impl ControlAgent {
                     actor_ref.get_name().unwrap()
                 );
                 actor_ref
-                    .send_message(ActorMessage::StartWork(actor_name.into()))
+                    .send_message(ActorMessage::StartWork(actor_name.into(), input.into()))
                     .expect("Failed to send message to next actor");
             }
         }
@@ -204,9 +206,9 @@ impl Actor for ControlAgent {
         log::debug!("Control actor {} handle invoked", name);
         if &state.agent_name == START_NODE {
             match &message {
-                ActorMessage::StartWork(_) => {
+                ActorMessage::StartWork(_, input) => {
                     log::info!("Start Work message received for control actor {}", name);
-                    self.start_next_actors(&name, myself.get_id(), &state.after_name);
+                    self.start_next_actors(&name, input, &state.after_name);
                     log::debug!("Stopping Actor start");
                     myself.stop(None);
                 }
@@ -219,7 +221,7 @@ impl Actor for ControlAgent {
             }
         } else if &state.agent_name == END_NODE {
             match &message {
-                ActorMessage::StartWork(from) => {
+                ActorMessage::StartWork(from, result) => {
                     log::info!("Start Work message received for control actor {}", name);
                     if !state.before_name.remove(from) {
                         log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
@@ -383,7 +385,7 @@ impl AgentSystem {
     }
 
     // Spawn all the actors and trigger start
-    async fn start(&mut self) -> &mut Self {
+    async fn start(&mut self, input: &str) -> &mut Self {
         for (agent_name, agent) in self.agent_map.drain() {
             let (actor, handle) = Actor::spawn(
                 Some(agent_name.clone()),
@@ -432,7 +434,7 @@ impl AgentSystem {
         self.all_handles.spawn(handle);
 
         let t = self.actors.get(START_NODE).unwrap();
-        cast!(t, ActorMessage::StartWork(START_NODE.into()))
+        cast!(t, ActorMessage::StartWork(START_NODE.into(), input.into()))
             .expect("Failed to trigger the Control Start node");
         self
     }
@@ -573,7 +575,7 @@ mod tests {
         let agent_system = wrapper
             .add_agent("A", Box::new(agent))
             .build()
-            .start()
+            .start("input")
             .await;
         println!("Pending tasks {}", agent_system.pending_count());
         agent_system.wait().await;
@@ -611,8 +613,8 @@ mod tests {
         let r = registry::where_is("agentA".into());
         if let Some(a_ref) = r {
             // let t = cast!(a_ref, ActorMessage::StartWork(a_ref.get_id()));
-            let _ = a_ref.send_message(ActorMessage::StartWork("test".into()));
-            let _ = a_ref.send_message(ActorMessage::EndWork("test".into()));
+            let _ = a_ref.send_message(ActorMessage::StartWork("test".into(), "".into()));
+            let _ = a_ref.send_message(ActorMessage::EndWork("test".into(), "".into()));
         }
 
         tokio::time::sleep(run_time).await;
@@ -655,7 +657,7 @@ mod tests {
             all_handles.spawn(handle);
         }
         let first_actor = actors[0].clone();
-        let t = cast!(&first_actor, ActorMessage::StartWork("A".into()));
+        let t = cast!(&first_actor, ActorMessage::StartWork("A".into(), "".into()));
         println!("**** **** **** *** ** *");
         println!("{:?}", t);
         // wait for the simulation to end
