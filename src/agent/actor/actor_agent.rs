@@ -1,29 +1,17 @@
-use std::{
-    any::Any,
-    collections::{HashMap, HashSet, VecDeque},
-    default,
-    hash::Hash,
-};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use futures::future::Join;
-use log::info;
 use ractor::{
-    async_trait, cast, registry, rpc::cast, Actor, ActorId, ActorName, ActorProcessingErr,
-    ActorRef, RpcReplyPort,
+    async_trait, cast, registry, rpc::cast, Actor, ActorProcessingErr, ActorRef, RpcReplyPort,
 };
-use serde::de::IntoDeserializer;
-use simple_logger::SimpleLogger;
-use tokio::{
-    task::JoinError,
-    time::{Duration, Instant},
-};
+use serde_json::Value;
+use tokio::task::JoinError;
 
-use crate::agent::{agent, Agent};
+use crate::{agent::Agent, prompt_args};
 
 // ============================ Agent Actor ============================ //
 
 enum ActorMessage {
-    StartWork(String, String),
+    StartWork(String, HashMap<String, Value>),
 
     EndWork(String, String),
 
@@ -79,6 +67,7 @@ struct AgentState {
     before_name: HashSet<String>,
     after_name: HashSet<String>,
     metrics: AgentMetrics,
+    agent: Option<Box<dyn Agent>>,
 }
 
 struct AgentActor {}
@@ -94,7 +83,10 @@ impl AgentActor {
                     actor_ref.get_name().unwrap()
                 );
                 actor_ref
-                    .send_message(ActorMessage::StartWork(actor_name.into(), result.into()))
+                    .send_message(ActorMessage::StartWork(
+                        actor_name.into(),
+                        get_input_variables(result),
+                    ))
                     .expect("Failed to send message to next actor");
             }
         }
@@ -108,7 +100,7 @@ impl AgentActor {
     ) -> Option<ActorMessage> {
         let name = myself.get_name().unwrap();
         match &message {
-            ActorMessage::StartWork(from, input) => {
+            ActorMessage::StartWork(from, _input) => {
                 log::info!("Start Work message received for actor {} ", name);
                 if !state.before_name.remove(from) {
                     log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
@@ -120,11 +112,15 @@ impl AgentActor {
                     log::debug!("Actor {}: All the before actors not completed", name);
                     return None;
                 }
-                // TODO: Invoke agent.
-                /*
-                 let result = self.call(input_variables).await?;
-                Ok(result.generation)
-                */
+                // TODO: invoke Agent.
+                // let executor = AgentExecutor::from_agent(state.);
+                // match executor.invoke(input_variables).await {
+                //     Ok(result) => {
+                //         println!("Result: {:?}", result);
+                //     }
+                //     Err(e) => panic!("Error invoking LLMChain: {:?}", e),
+                // }
+
                 log::debug!(
                     "Processing complete for Actor {}, Initimating next actors",
                     name
@@ -134,13 +130,16 @@ impl AgentActor {
                 myself.stop(Some("pipeline completed".into()));
                 None
             }
-            ActorMessage::EndWork(from, _) => {
+            ActorMessage::EndWork(_from, _) => {
                 log::info!("End work for Actor {}", name);
                 None
             }
-            ActorMessage::RestartWork(from, input) => {
+            ActorMessage::RestartWork(_from, input) => {
                 log::info!("Restarting for  Actor {}", name);
-                let _ = cast(myself, ActorMessage::StartWork(name, input.into()));
+                let _ = cast(
+                    myself,
+                    ActorMessage::StartWork(name, get_input_variables(input)),
+                );
 
                 None
             }
@@ -152,10 +151,22 @@ impl AgentActor {
     }
 }
 
+fn get_input_variables(result: &str) -> HashMap<String, Value> {
+    let input_variables = prompt_args! {
+        "input" => result,
+    };
+    input_variables
+}
+
 struct ControlAgent {}
 
 impl ControlAgent {
-    fn start_next_actors(&self, actor_name: &str, input: &str, after_name: &HashSet<String>) {
+    fn start_next_actors(
+        &self,
+        actor_name: &str,
+        input: HashMap<String, Value>,
+        after_name: &HashSet<String>,
+    ) {
         for next_actor in after_name {
             let res = registry::where_is(next_actor.into());
             if let Some(actor_ref) = res {
@@ -165,7 +176,7 @@ impl ControlAgent {
                     actor_ref.get_name().unwrap()
                 );
                 actor_ref
-                    .send_message(ActorMessage::StartWork(actor_name.into(), input.into()))
+                    .send_message(ActorMessage::StartWork(actor_name.into(), input.clone()))
                     .expect("Failed to send message to next actor");
             }
         }
@@ -193,6 +204,7 @@ impl Actor for ControlAgent {
             metrics: AgentMetrics {
                 state_change_count: 0,
             },
+            agent: None,
         })
     }
 
@@ -208,7 +220,7 @@ impl Actor for ControlAgent {
             match &message {
                 ActorMessage::StartWork(_, input) => {
                     log::info!("Start Work message received for control actor {}", name);
-                    self.start_next_actors(&name, input, &state.after_name);
+                    self.start_next_actors(&name, input.clone(), &state.after_name);
                     log::debug!("Stopping Actor start");
                     myself.stop(None);
                 }
@@ -226,6 +238,7 @@ impl Actor for ControlAgent {
                     if !state.before_name.remove(from) {
                         log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
                     }
+                    log::info!("Result of agent system is {:?}", result);
                     if state.before_name.is_empty() {
                         log::debug!("Stopping Actor {}", name);
                         myself.stop(Some("pipeline completed".into()));
@@ -267,6 +280,7 @@ impl Actor for AgentActor {
             metrics: AgentMetrics {
                 state_change_count: 0,
             },
+            agent: None,
         })
     }
 
@@ -385,7 +399,7 @@ impl AgentSystem {
     }
 
     // Spawn all the actors and trigger start
-    async fn start(&mut self, input: &str) -> &mut Self {
+    async fn start(&mut self, input: HashMap<String, Value>) -> &mut Self {
         for (agent_name, agent) in self.agent_map.drain() {
             let (actor, handle) = Actor::spawn(
                 Some(agent_name.clone()),
@@ -481,11 +495,11 @@ impl AgentSystem {
 
 #[cfg(test)]
 mod tests {
+    use simple_logger::SimpleLogger;
+    use std::time::Duration;
     use std::{error::Error, sync::Arc};
 
-    use ollama_rs::models::create;
     use ractor::registry;
-    use serde::de::IntoDeserializer;
     use serde_json::Value;
 
     use crate::llm::ollama::client::Ollama;
@@ -513,7 +527,7 @@ mod tests {
 
     fn create_agent() -> Box<dyn Agent> {
         let llm = Ollama::default().with_model("llama3");
-        let memory = SimpleMemory::new();
+        let _memory = SimpleMemory::new();
         let tool_calc = Calc {};
         let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
             .tools(&[Arc::new(tool_calc)])
@@ -561,21 +575,24 @@ mod tests {
         SimpleLogger::new().init().unwrap();
 
         let llm = Ollama::default().with_model("llama3");
-        let memory = SimpleMemory::new();
+        // memory is not required for this test.
+        // let memory = SimpleMemory::new();
         let tool_calc = Calc {};
         let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
             .tools(&[Arc::new(tool_calc)])
             .build(llm)
             .unwrap();
-        let input_variables = prompt_args! {
-            "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
-        };
+        // let input_variables = prompt_args! {
+        //     "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
+        // };
 
         let mut wrapper = AgentSystem::new();
         let agent_system = wrapper
             .add_agent("A", Box::new(agent))
             .build()
-            .start("input")
+            .start(prompt_args! {
+                "input" => "Hi from Bangalore, And what date is today",
+            })
             .await;
         println!("Pending tasks {}", agent_system.pending_count());
         agent_system.wait().await;
@@ -594,7 +611,9 @@ mod tests {
             .add_child("B", "D", create_agent())
             .add_child("C", "D", create_agent())
             .build()
-            .start("input")
+            .start(prompt_args! {
+                "input" => "Hi from Bangalore, what is happening today?",
+            })
             .await;
         println!("Pending tasks {}", agent_system.pending_count());
         agent_system.wait().await;
@@ -607,17 +626,17 @@ mod tests {
         let run_time = Duration::from_secs(5);
 
         let llm = Ollama::default().with_model("llama3");
-        let memory = SimpleMemory::new();
+        let _memory = SimpleMemory::new();
         let tool_calc = Calc {};
         let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
             .tools(&[Arc::new(tool_calc)])
             .build(llm)
             .unwrap();
-        let input_variables = prompt_args! {
+        let _input_variables = prompt_args! {
             "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
         };
 
-        let (actor, handle) = Actor::spawn(
+        let (actor, _handle) = Actor::spawn(
             Some("agentA".into()),
             AgentActor {},
             AgentArguments {
@@ -632,8 +651,16 @@ mod tests {
         let r = registry::where_is("agentA".into());
         if let Some(a_ref) = r {
             // let t = cast!(a_ref, ActorMessage::StartWork(a_ref.get_id()));
-            let _ = a_ref.send_message(ActorMessage::StartWork("test".into(), "".into()));
-            let _ = a_ref.send_message(ActorMessage::EndWork("test".into(), "".into()));
+            let _ = a_ref.send_message(ActorMessage::StartWork(
+                "test".into(),
+                prompt_args! {
+                    "input" => "what date is today?",
+                },
+            ));
+            let _ = a_ref.send_message(ActorMessage::EndWork(
+                "test".into(),
+                "It is a Sunday, july 14th".into(),
+            ));
         }
 
         tokio::time::sleep(run_time).await;
@@ -676,7 +703,10 @@ mod tests {
             all_handles.spawn(handle);
         }
         let first_actor = actors[0].clone();
-        let t = cast!(&first_actor, ActorMessage::StartWork("A".into(), "".into()));
+        let t = cast!(
+            &first_actor,
+            ActorMessage::StartWork("A".into(), HashMap::new())
+        );
         println!("**** **** **** *** ** *");
         println!("{:?}", t);
         // wait for the simulation to end

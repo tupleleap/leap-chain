@@ -133,10 +133,13 @@ mod tests {
             .tools(&[Arc::new(tool_calc)])
             .build(llm)
             .unwrap();
+        // let input_variables = prompt_args! {
+        //     "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
+        // };
         let input_variables = prompt_args! {
-            "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
+            "input" => "Hi From Bangalore, what is special about sunday in bangalore?Also, end it with a question about bangalore",
         };
-        let executor = AgentExecutor::from_agent(agent).with_memory(memory.into());
+        let executor = AgentExecutor::from_agent(agent);
         match executor.invoke(input_variables).await {
             Ok(result) => {
                 println!("Result: {:?}", result);
