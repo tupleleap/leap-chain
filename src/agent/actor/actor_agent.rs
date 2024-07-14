@@ -583,6 +583,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_agent_system_start_multiple() {
+        SimpleLogger::new().init().unwrap();
+
+        let mut agent_system = AgentSystem::new();
+        agent_system
+            .add_agent("A", create_agent())
+            .add_child("A", "B", create_agent())
+            .add_child("A", "C", create_agent())
+            .add_child("B", "D", create_agent())
+            .add_child("C", "D", create_agent())
+            .build()
+            .start("input")
+            .await;
+        println!("Pending tasks {}", agent_system.pending_count());
+        agent_system.wait().await;
+        assert_eq!(0, agent_system.pending_count());
+    }
+
+    #[tokio::test]
     async fn test_agent_integration() {
         SimpleLogger::new().init().unwrap();
         let run_time = Duration::from_secs(5);
