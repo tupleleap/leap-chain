@@ -1,6 +1,6 @@
 use std::{
     any::Any,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     default,
     hash::Hash,
 };
@@ -23,26 +23,26 @@ use crate::agent::{agent, Agent};
 // ============================ Agent Actor ============================ //
 
 enum ActorMessage {
-    StartWork(ActorId),
+    StartWork(String),
 
-    EndWork(ActorId),
+    EndWork(String),
 
-    RestartWork(ActorId),
+    RestartWork(String),
 
-    GetStatus(ActorId),
-    CurrentStatus(ActorId),
+    GetStatus(String),
+    CurrentStatus(String),
 
     /// Status messages
     /// Actor has not starting operator
-    Idle(ActorId),
+    Idle(String),
     /// Actor is Running
-    Running(ActorId),
+    Running(String),
 
     /// Actor completed Successfully
-    Success(ActorId),
+    Success(String),
 
     /// Actor failed due to an error
-    Failed(ActorId),
+    Failed(String),
 
     /// Metrics of the Actor
     SendMetrics(RpcReplyPort<AgentMetrics>),
@@ -50,16 +50,9 @@ enum ActorMessage {
     ///Check if the Actor has Compelted
     IsComplete(ActorRef<ActorMessage>),
     /// Completed
-    Completed(ActorId),
+    Completed(String),
     /// Not Completed
-    NotCompleted(ActorId),
-    /// Request the fork be sent to a philosopher
-    // RequestFork(ActorRef<ActorInternalMessage>),
-    /// Mark the fork as currently being used
-    UsingFork(ActorId),
-    /// Sent to a fork to indicate that it was put down and no longer is in use. This will
-    /// allow the fork to be sent to the next user.
-    PutForkDown(ActorId),
+    NotCompleted(String),
 }
 
 #[cfg(feature = "cluster")]
@@ -67,8 +60,8 @@ impl ractor::Message for ActorMessage {}
 
 struct AgentArguments {
     agent_name: String,
-    before_name: VecDeque<String>,
-    after_name: VecDeque<String>,
+    before_name: HashSet<String>,
+    after_name: HashSet<String>,
     agent: Option<Box<dyn Agent>>,
 }
 #[derive(Clone, Debug)]
@@ -83,17 +76,99 @@ struct AgentState {
     completed: bool,
     owned_by: ActorRef<ActorMessage>,
     backlog: VecDeque<ActorMessage>,
-    before_name: VecDeque<String>,
-    after_name: VecDeque<String>,
+    before_name: HashSet<String>,
+    after_name: HashSet<String>,
     metrics: AgentMetrics,
 }
 
 struct AgentActor {}
 
+impl AgentActor {
+    fn start_next_actors(&self, actor_name: &str, actor_id: ActorId, after_name: &HashSet<String>) {
+        for next_actor in after_name {
+            let res = registry::where_is(next_actor.into());
+            if let Some(actor_ref) = res {
+                log::info!(
+                    "actor {} invoking start on actor {}",
+                    actor_name,
+                    actor_ref.get_name().unwrap()
+                );
+                actor_ref
+                    .send_message(ActorMessage::StartWork(actor_name.into()))
+                    .expect("Failed to send message to next actor");
+            }
+        }
+    }
+
+    fn handle_internal(
+        &self,
+        myself: &ActorRef<ActorMessage>,
+        message: ActorMessage,
+        state: &mut AgentState,
+    ) -> Option<ActorMessage> {
+        let name = myself.get_name().unwrap();
+        match &message {
+            ActorMessage::StartWork(from) => {
+                log::info!("Start Work message received for actor {} ", name);
+                if !state.before_name.remove(from) {
+                    log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
+                }
+                if state.before_name.is_empty() {
+                    log::debug!("Message from all before actors received for actor {}", name);
+                    log::info!("Start processing on actor {}", name);
+                } else {
+                    log::debug!("Actor {}: All the before actors not completed", name);
+                    return None;
+                }
+
+                log::debug!(
+                    "Processing complete for Actor {}, Initimating next actors",
+                    name
+                );
+                self.start_next_actors(&name, myself.get_id(), &state.after_name);
+                log::debug!("Stopping Actor {}", name);
+                myself.stop(Some("pipeline completed".into()));
+                None
+            }
+            ActorMessage::EndWork(from) => {
+                log::info!("End work for Actor {}", name);
+                None
+            }
+            ActorMessage::RestartWork(from) => {
+                log::info!("Restarting for  Actor {}", name);
+                let _ = cast(myself, ActorMessage::StartWork(name));
+
+                None
+            }
+            _default => {
+                log::info!("Unknown message is recieved for actor {}", name);
+                None
+            }
+        }
+    }
+}
+
 // Control Actor acts as the start and end agents.
 // TODO: update it
 struct ControlAgent {}
 
+impl ControlAgent {
+    fn start_next_actors(&self, actor_name: &str, actor_id: ActorId, after_name: &HashSet<String>) {
+        for next_actor in after_name {
+            let res = registry::where_is(next_actor.into());
+            if let Some(actor_ref) = res {
+                log::info!(
+                    "actor {} invoking start on actor {}",
+                    actor_name,
+                    actor_ref.get_name().unwrap()
+                );
+                actor_ref
+                    .send_message(ActorMessage::StartWork(actor_name.into()))
+                    .expect("Failed to send message to next actor");
+            }
+        }
+    }
+}
 #[async_trait]
 impl Actor for ControlAgent {
     type Msg = ActorMessage;
@@ -105,7 +180,7 @@ impl Actor for ControlAgent {
         myself: ActorRef<Self::Msg>,
         args: AgentArguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        log::info!("Pre start api invoked on Control Agent");
+        log::info!("Pre start api invoked on Control actor {}", args.agent_name);
         Ok(Self::State {
             agent_name: args.agent_name,
             owned_by: myself,
@@ -126,101 +201,43 @@ impl Actor for ControlAgent {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         let name = myself.get_name().unwrap_or("no name".to_string());
-        log::info!("Control agent handle invoked for {}", name);
+        log::debug!("Control actor {} handle invoked", name);
         if &state.agent_name == START_NODE {
-            log::info!("Actor type is Start Node");
             match &message {
-                ActorMessage::StartWork(who) => {
-                    if state.owned_by.get_id() == *who {
-                        log::info!("Staring control node {}", name);
-                        for next_actor in &state.after_name {
-                            let res = registry::where_is(next_actor.into());
-                            if let Some(actor_ref) = res {
-                                log::info!(
-                                    "Control agent {} invoking start on node {}",
-                                    name,
-                                    actor_ref.get_name().unwrap()
-                                );
-                                actor_ref
-                                    .send_message(ActorMessage::StartWork(actor_ref.get_id()))
-                                    .expect("Failed to send message to next actor");
-                            }
-                        }
-                    } else {
-                        log::info!(
-                            "ERROR Recieved StartWork {:?}. Real Owner is {:?}",
-                            who,
-                            state.owned_by.get_id()
-                        );
-                    }
+                ActorMessage::StartWork(_) => {
+                    log::info!("Start Work message received for control actor {}", name);
+                    self.start_next_actors(&name, myself.get_id(), &state.after_name);
                 }
                 _default => {
-                    log::info!("Unknown message is recieved, ignoring it...");
+                    log::info!(
+                        "Unknown message is received by actor {}, ignoring it...",
+                        name
+                    );
                 }
             }
         } else if &state.agent_name == END_NODE {
-            log::info!("Agent type is End Node");
+            match &message {
+                ActorMessage::StartWork(from) => {
+                    log::info!("Start Work message received for control actor {}", name);
+                    if !state.before_name.remove(from) {
+                        log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
+                    }
+                    if state.before_name.is_empty() {
+                        log::debug!("Stopping Actor {}", name);
+                        myself.stop(Some("pipeline completed".into()));
+                    }
+                }
+                _default => {
+                    log::info!(
+                        "Unknown message is received by actor {}, ignoring it...",
+                        name
+                    );
+                }
+            }
         } else {
             panic!("Invalid agent name");
         }
         Ok(())
-    }
-}
-
-impl AgentActor {
-    fn handle_internal(
-        &self,
-        myself: &ActorRef<ActorMessage>,
-        message: ActorMessage,
-        state: &mut AgentState,
-    ) -> Option<ActorMessage> {
-        let name = myself.get_name().unwrap();
-        match &message {
-            ActorMessage::StartWork(who) => {
-                if state.owned_by.get_id() == *who {
-                    log::info!("Start Work message received for actor {} ", name);
-                } else {
-                    log::info!(
-                        "ERROR Recieved StartWork {:?}. Real Owner is {:?}",
-                        who,
-                        state.owned_by.get_id()
-                    );
-                }
-                None
-            }
-            ActorMessage::EndWork(who) => {
-                if state.owned_by.get_id() == *who {
-                    log::info!("End work for Actor {}", name);
-                } else {
-                    log::info!(
-                        "ERROR Recieved EndWork {:?}. Real Owner is {:?}",
-                        who,
-                        state.owned_by.get_id()
-                    );
-                }
-                None
-            }
-            ActorMessage::RestartWork(who) => {
-                if state.owned_by.get_id() == *who {
-                    // TODO update State.
-                    // Inform to supervisor about restart
-                    // Restart the actor.
-                    log::info!("Restarting for  Actor {}", name);
-                    let _ = cast(myself, ActorMessage::StartWork(state.owned_by.get_id()));
-                } else {
-                    log::info!(
-                        "ERROR Recieved EndWork {:?}. Real Owner is {:?}",
-                        who,
-                        state.owned_by.get_id()
-                    );
-                }
-                None
-            }
-            _default => {
-                log::info!("Unknown message is recieved for actor {}", name);
-                None
-            }
-        }
     }
 }
 
@@ -235,7 +252,7 @@ impl Actor for AgentActor {
         myself: ActorRef<Self::Msg>,
         args: AgentArguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        log::info!("Pre start api invoked");
+        log::info!("Pre start api invoked on actor {}", args.agent_name);
         Ok(Self::State {
             agent_name: args.agent_name,
             owned_by: myself,
@@ -306,8 +323,8 @@ impl Actor for AgentActor {
 
 struct AgentSystem {
     // TODO remove VecDeque and make it a vector.
-    nodes_after: HashMap<String, VecDeque<String>>,
-    nodes_before: HashMap<String, VecDeque<String>>,
+    nodes_after: HashMap<String, HashSet<String>>,
+    nodes_before: HashMap<String, HashSet<String>>,
     agent_map: HashMap<String, Box<dyn Agent>>,
     actors: HashMap<String, ActorRef<ActorMessage>>,
     all_handles: tokio::task::JoinSet<Result<(), JoinError>>,
@@ -318,11 +335,11 @@ const END_NODE: &str = "end";
 
 impl AgentSystem {
     fn new() -> Self {
-        let mut nodes_after: HashMap<String, VecDeque<String>> = HashMap::new();
-        nodes_after.insert(START_NODE.into(), VecDeque::new());
+        let mut nodes_after: HashMap<String, HashSet<String>> = HashMap::new();
+        nodes_after.insert(START_NODE.into(), HashSet::new());
 
-        let mut nodes_before: HashMap<String, VecDeque<String>> = HashMap::new();
-        nodes_before.insert(END_NODE.into(), VecDeque::new());
+        let mut nodes_before: HashMap<String, HashSet<String>> = HashMap::new();
+        nodes_before.insert(END_NODE.into(), HashSet::new());
         Self {
             nodes_after,
             nodes_before,
@@ -360,7 +377,6 @@ impl AgentSystem {
     // build the agent system.
     fn build(&mut self) -> &mut Self {
         self.add_end_entry();
-        self.start();
         self
     }
 
@@ -382,13 +398,13 @@ impl AgentSystem {
             self.actors.insert(agent_name, actor);
             self.all_handles.spawn(handle);
         }
-        // Add start and end control agents
+        // Add start and end control actors
         let (actor, handle) = Actor::spawn(
             Some(START_NODE.into()),
             ControlAgent {},
             AgentArguments {
                 after_name: self.nodes_after.get(START_NODE).unwrap().clone(),
-                before_name: VecDeque::new(),
+                before_name: HashSet::new(),
                 agent: None,
                 agent_name: START_NODE.into(),
             },
@@ -414,24 +430,24 @@ impl AgentSystem {
         self.all_handles.spawn(handle);
 
         let t = self.actors.get(START_NODE).unwrap();
-        cast!(t, ActorMessage::StartWork(t.get_id()))
+        cast!(t, ActorMessage::StartWork(START_NODE.into()))
             .expect("Failed to trigger the Control Start node");
         self
     }
     // helper method to add entry.
     fn add_entry(&mut self, parent: &str, child: &str) {
         // add entry for child
-        self.nodes_after.insert(child.into(), VecDeque::new());
+        self.nodes_after.insert(child.into(), HashSet::new());
 
         self.nodes_before
             .entry(child.into())
-            .or_insert_with(|| VecDeque::new())
-            .push_back(parent.into());
+            .or_insert_with(|| HashSet::new())
+            .insert(parent.into());
 
         // add entry for parent
-        self.nodes_after
-            .entry(parent.into())
-            .and_modify(|v| v.push_back(child.into()));
+        self.nodes_after.entry(parent.into()).and_modify(|v| {
+            v.insert(child.into());
+        });
     }
 
     // helper method to add end entry
@@ -502,20 +518,20 @@ mod tests {
             .add_child("C", "D", create_agent())
             .build();
 
-        let mut exp_nodes_after: HashMap<String, VecDeque<String>> = HashMap::new();
-        exp_nodes_after.insert("D".into(), VecDeque::from(vec![END_NODE.into()]));
-        exp_nodes_after.insert("A".into(), VecDeque::from(vec!["B".into(), "C".into()]));
-        exp_nodes_after.insert("C".into(), VecDeque::from(vec!["D".into()]));
-        exp_nodes_after.insert(END_NODE.into(), VecDeque::from(vec![]));
-        exp_nodes_after.insert("B".into(), VecDeque::from(vec!["D".into()]));
-        exp_nodes_after.insert(START_NODE.into(), VecDeque::from(vec!["A".into()]));
+        let mut exp_nodes_after: HashMap<String, HashSet<String>> = HashMap::new();
+        exp_nodes_after.insert("D".into(), HashSet::from([END_NODE.into()]));
+        exp_nodes_after.insert("A".into(), HashSet::from(["B".into(), "C".into()]));
+        exp_nodes_after.insert("C".into(), HashSet::from(["D".into()]));
+        exp_nodes_after.insert(END_NODE.into(), HashSet::from([]));
+        exp_nodes_after.insert("B".into(), HashSet::from(["D".into()]));
+        exp_nodes_after.insert(START_NODE.into(), HashSet::from(["A".into()]));
 
-        let mut exp_nodes_before: HashMap<String, VecDeque<String>> = HashMap::new();
-        exp_nodes_before.insert(END_NODE.into(), VecDeque::from(vec!["D".into()]));
-        exp_nodes_before.insert("D".into(), VecDeque::from(vec!["B".into(), "C".into()]));
-        exp_nodes_before.insert("C".into(), VecDeque::from(vec!["A".into()]));
-        exp_nodes_before.insert("A".into(), VecDeque::from(vec![START_NODE.into()]));
-        exp_nodes_before.insert("B".into(), VecDeque::from(vec!["A".into()]));
+        let mut exp_nodes_before: HashMap<String, HashSet<String>> = HashMap::new();
+        exp_nodes_before.insert(END_NODE.into(), HashSet::from(["D".into()]));
+        exp_nodes_before.insert("D".into(), HashSet::from(["B".into(), "C".into()]));
+        exp_nodes_before.insert("C".into(), HashSet::from(["A".into()]));
+        exp_nodes_before.insert("A".into(), HashSet::from([START_NODE.into()]));
+        exp_nodes_before.insert("B".into(), HashSet::from(["A".into()]));
 
         assert_eq!(agent_system.nodes_after, exp_nodes_after);
         assert_eq!(agent_system.nodes_before, exp_nodes_before);
@@ -589,8 +605,8 @@ mod tests {
             Some("agentA".into()),
             AgentActor {},
             AgentArguments {
-                after_name: VecDeque::new(),
-                before_name: VecDeque::new(),
+                after_name: HashSet::new(),
+                before_name: HashSet::new(),
                 agent: Some(Box::new(agent)),
                 agent_name: "agentA".into(),
             },
@@ -600,8 +616,8 @@ mod tests {
         let r = registry::where_is("agentA".into());
         if let Some(a_ref) = r {
             // let t = cast!(a_ref, ActorMessage::StartWork(a_ref.get_id()));
-            let _ = a_ref.send_message(ActorMessage::StartWork(a_ref.get_id()));
-            let _ = a_ref.send_message(ActorMessage::EndWork(a_ref.get_id()));
+            let _ = a_ref.send_message(ActorMessage::StartWork("test".into()));
+            let _ = a_ref.send_message(ActorMessage::EndWork("test".into()));
         }
 
         tokio::time::sleep(run_time).await;
@@ -632,8 +648,8 @@ mod tests {
                 Some(actor_names[i].into()),
                 AgentActor {},
                 AgentArguments {
-                    after_name: VecDeque::new(),
-                    before_name: VecDeque::new(),
+                    after_name: HashSet::new(),
+                    before_name: HashSet::new(),
                     agent: Some(agent_box),
                     agent_name: actor_names[i].into(),
                 },
@@ -644,7 +660,7 @@ mod tests {
             all_handles.spawn(handle);
         }
         let first_actor = actors[0].clone();
-        let t = cast!(&first_actor, ActorMessage::StartWork(first_actor.get_id()));
+        let t = cast!(&first_actor, ActorMessage::StartWork("A".into()));
         println!("**** **** **** *** ** *");
         println!("{:?}", t);
         // wait for the simulation to end
