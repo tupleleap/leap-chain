@@ -207,6 +207,8 @@ impl Actor for ControlAgent {
                 ActorMessage::StartWork(_) => {
                     log::info!("Start Work message received for control actor {}", name);
                     self.start_next_actors(&name, myself.get_id(), &state.after_name);
+                    log::debug!("Stopping Actor start");
+                    myself.stop(None);
                 }
                 _default => {
                     log::info!(
@@ -381,7 +383,7 @@ impl AgentSystem {
     }
 
     // Spawn all the actors and trigger start
-    async fn start(&mut self) -> &Self {
+    async fn start(&mut self) -> &mut Self {
         for (agent_name, agent) in self.agent_map.drain() {
             let (actor, handle) = Actor::spawn(
                 Some(agent_name.clone()),
@@ -434,6 +436,17 @@ impl AgentSystem {
             .expect("Failed to trigger the Control Start node");
         self
     }
+
+    // Wait until all the actors have completed
+    async fn wait(&mut self) {
+        while self.all_handles.join_next().await.is_some() {}
+    }
+
+    // Pending tasks in the agentSystem.
+    fn pending_count(&self) -> usize {
+        self.all_handles.len()
+    }
+
     // helper method to add entry.
     fn add_entry(&mut self, parent: &str, child: &str) {
         // add entry for child
@@ -544,7 +557,6 @@ mod tests {
     #[tokio::test]
     async fn test_agent_system_start_single() {
         SimpleLogger::new().init().unwrap();
-        let run_time = Duration::from_secs(5);
 
         let llm = Ollama::default().with_model("llama3");
         let memory = SimpleMemory::new();
@@ -563,26 +575,9 @@ mod tests {
             .build()
             .start()
             .await;
-        // let (actor, handle) = Actor::spawn(
-        //     Some("agentA".into()),
-        //     AgentActor {},
-        //     AgentArguments {
-        //         after_name: VecDeque::new(),
-        //         before_name: VecDeque::new(),
-        //         agent: Box::new(agent),
-        //     },
-        // )
-        // .await
-        // .expect("failed to create agent actor");
-        // let r = registry::where_is("agentA".into());
-        // if let Some(a_ref) = r {
-        //     // let t = cast!(a_ref, ActorMessage::StartWork(a_ref.get_id()));
-        //     let _ = a_ref.send_message(ActorMessage::StartWork(a_ref.get_id()));
-        //     let _ = a_ref.send_message(ActorMessage::EndWork(a_ref.get_id()));
-        // }
-
-        tokio::time::sleep(run_time).await;
-        // actor.stop(None)
+        println!("Pending tasks {}", agent_system.pending_count());
+        agent_system.wait().await;
+        assert_eq!(0, agent_system.pending_count());
     }
 
     #[tokio::test]
