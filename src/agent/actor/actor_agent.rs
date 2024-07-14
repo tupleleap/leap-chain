@@ -125,19 +125,22 @@ impl Actor for ControlAgent {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        log::info!(
-            "handle invoked {}",
-            myself.get_name().unwrap_or("no name".to_string())
-        );
+        let name = myself.get_name().unwrap_or("no name".to_string());
+        log::info!("Control agent handle invoked for {}", name);
         if &state.agent_name == START_NODE {
-            log::info!("Agent type is Start Node");
+            log::info!("Actor type is Start Node");
             match &message {
                 ActorMessage::StartWork(who) => {
                     if state.owned_by.get_id() == *who {
-                        log::info!("Staring control node");
+                        log::info!("Staring control node {}", name);
                         for next_actor in &state.after_name {
                             let res = registry::where_is(next_actor.into());
                             if let Some(actor_ref) = res {
+                                log::info!(
+                                    "Control agent {} invoking start on node {}",
+                                    name,
+                                    actor_ref.get_name().unwrap()
+                                );
                                 actor_ref
                                     .send_message(ActorMessage::StartWork(actor_ref.get_id()))
                                     .expect("Failed to send message to next actor");
@@ -160,20 +163,6 @@ impl Actor for ControlAgent {
         } else {
             panic!("Invalid agent name");
         }
-        // let mut maybe_unhandled = self.handle_internal(&myself, message, state);
-        // if let Some(message) = maybe_unhandled {
-        //     state.backlog.push_back(message);
-        // } else {
-        //     // we handled the message, check the queue for any work to dequeue and handle
-        //     while !state.backlog.is_empty() && maybe_unhandled.is_none() {
-        //         let head = state.backlog.pop_front().unwrap();
-        //         maybe_unhandled = self.handle_internal(&myself, head, state);
-        //     }
-        //     // put the first unhandled msg back to the front of the queue
-        //     if let Some(msg) = maybe_unhandled {
-        //         state.backlog.push_front(msg);
-        //     }
-        // }
         Ok(())
     }
 }
@@ -185,10 +174,11 @@ impl AgentActor {
         message: ActorMessage,
         state: &mut AgentState,
     ) -> Option<ActorMessage> {
+        let name = myself.get_name().unwrap();
         match &message {
             ActorMessage::StartWork(who) => {
                 if state.owned_by.get_id() == *who {
-                    log::info!("Start Actor ");
+                    log::info!("Start Work message received for actor {} ", name);
                 } else {
                     log::info!(
                         "ERROR Recieved StartWork {:?}. Real Owner is {:?}",
@@ -200,7 +190,7 @@ impl AgentActor {
             }
             ActorMessage::EndWork(who) => {
                 if state.owned_by.get_id() == *who {
-                    log::info!("End work for  Actor ");
+                    log::info!("End work for Actor {}", name);
                 } else {
                     log::info!(
                         "ERROR Recieved EndWork {:?}. Real Owner is {:?}",
@@ -215,7 +205,7 @@ impl AgentActor {
                     // TODO update State.
                     // Inform to supervisor about restart
                     // Restart the actor.
-                    log::info!("Restarting for  Actor ");
+                    log::info!("Restarting for  Actor {}", name);
                     let _ = cast(myself, ActorMessage::StartWork(state.owned_by.get_id()));
                 } else {
                     log::info!(
@@ -227,7 +217,7 @@ impl AgentActor {
                 None
             }
             _default => {
-                log::info!("Unknown message is recieved");
+                log::info!("Unknown message is recieved for actor {}", name);
                 None
             }
         }
@@ -266,7 +256,7 @@ impl Actor for AgentActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         log::info!(
-            "handle invoked {}",
+            "handle invoked on actor {}",
             myself.get_name().unwrap_or("no name".to_string())
         );
         let mut maybe_unhandled = self.handle_internal(&myself, message, state);
