@@ -17,6 +17,7 @@ struct AgentOutput {
     action_input: String,
 }
 
+#[derive(Clone)]
 pub struct ChatOutputParser {}
 impl ChatOutputParser {
     pub fn new() -> Self {

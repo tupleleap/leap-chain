@@ -156,7 +156,8 @@ mod tests {
         let input_variables = prompt_args! {
             "input" => "hola,I am newbie and I am 10 years old. I am studying computer science",
         };
-        let executor = AgentExecutor::from_agent(agent).with_memory(memory.into());
+        let executor: AgentExecutor<crate::agent::ConversationalAgent> =
+            AgentExecutor::from_agent(agent).with_memory(memory.into());
         match executor.invoke(input_variables).await {
             Ok(result) => {
                 println!("Result A: {:?}", result);

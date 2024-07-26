@@ -6,7 +6,11 @@ use ractor::{
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use crate::{agent::Agent, prompt_args};
+use crate::{
+    agent::{self, Agent, AgentExecutor, ConversationalAgent},
+    chain::Chain,
+    prompt_args,
+};
 
 // ============================ Agent Actor ============================ //
 
@@ -67,7 +71,7 @@ struct AgentState {
     before_name: HashSet<String>,
     after_name: HashSet<String>,
     metrics: AgentMetrics,
-    agent: Option<Box<dyn Agent>>,
+    agent: Option<Box<ConversationalAgent>>,
 }
 
 struct AgentActor {}
@@ -92,7 +96,7 @@ impl AgentActor {
         }
     }
 
-    fn handle_internal(
+    async fn handle_internal(
         &self,
         myself: &ActorRef<ActorMessage>,
         message: ActorMessage,
@@ -100,7 +104,7 @@ impl AgentActor {
     ) -> Option<ActorMessage> {
         let name = myself.get_name().unwrap();
         match &message {
-            ActorMessage::StartWork(from, _input) => {
+            ActorMessage::StartWork(from, input) => {
                 log::info!("Start Work message received for actor {} ", name);
                 if !state.before_name.remove(from) {
                     log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
@@ -112,14 +116,22 @@ impl AgentActor {
                     log::debug!("Actor {}: All the before actors not completed", name);
                     return None;
                 }
-                // TODO: invoke Agent.
-                // let executor = AgentExecutor::from_agent(state.);
-                // match executor.invoke(input_variables).await {
-                //     Ok(result) => {
-                //         println!("Result: {:?}", result);
-                //     }
-                //     Err(e) => panic!("Error invoking LLMChain: {:?}", e),
-                // }
+                if state.agent.is_some() {
+                    let ag = state.agent.as_ref().unwrap().clone();
+                    let ag2 = *ag;
+
+                    let executor: AgentExecutor<ConversationalAgent> =
+                        AgentExecutor::from_agent(ag2.into());
+
+                    match executor.invoke(input.clone()).await {
+                        Ok(result) => {
+                            println!("Result: {:?}", result);
+                        }
+                        Err(e) => panic!("Error invoking LLMChain: {:?}", e),
+                    }
+                } else {
+                    log::info!("WARNING : No agent present");
+                }
 
                 log::debug!(
                     "Processing complete for Actor {}, Initimating next actors",
@@ -294,14 +306,14 @@ impl Actor for AgentActor {
             "handle invoked on actor {}",
             myself.get_name().unwrap_or("no name".to_string())
         );
-        let mut maybe_unhandled = self.handle_internal(&myself, message, state);
+        let mut maybe_unhandled = self.handle_internal(&myself, message, state).await;
         if let Some(message) = maybe_unhandled {
             state.backlog.push_back(message);
         } else {
             // we handled the message, check the queue for any work to dequeue and handle
             while !state.backlog.is_empty() && maybe_unhandled.is_none() {
                 let head = state.backlog.pop_front().unwrap();
-                maybe_unhandled = self.handle_internal(&myself, head, state);
+                maybe_unhandled = self.handle_internal(&myself, head, state).await;
             }
             // put the first unhandled msg back to the front of the queue
             if let Some(msg) = maybe_unhandled {
@@ -312,35 +324,7 @@ impl Actor for AgentActor {
     }
 }
 
-// fn init_logging() {
-//     let dir = tracing_subscriber::filter::Directive::from(tracing::Level::DEBUG);
-
-//     use std::io::stderr;
-//     use std::io::IsTerminal;
-//     use tracing_glog::Glog;
-//     use tracing_glog::GlogFields;
-//     use tracing_subscriber::filter::EnvFilter;
-//     use tracing_subscriber::layer::SubscriberExt;
-//     use tracing_subscriber::Registry;
-
-//     let fmt = tracing_subscriber::fmt::Layer::default()
-//         .with_ansi(stderr().is_terminal())
-//         .with_writer(std::io::stderr)
-//         .event_format(Glog::default().with_timer(tracing_glog::LocalTime::default()))
-//         .fmt_fields(GlogFields::default().compact());
-
-//     let filter = vec![dir]
-//         .into_iter()
-//         .fold(EnvFilter::from_default_env(), |filter, directive| {
-//             filter.add_directive(directive)
-//         });
-
-//     let subscriber = Registry::default().with(filter).with(fmt);
-//     tracing::subscriber::set_global_default(subscriber).expect("to set global subscriber");
-// }
-
 struct AgentSystem {
-    // TODO remove VecDeque and make it a vector.
     nodes_after: HashMap<String, HashSet<String>>,
     nodes_before: HashMap<String, HashSet<String>>,
     agent_map: HashMap<String, Box<dyn Agent>>,
@@ -377,7 +361,7 @@ impl AgentSystem {
         self
     }
 
-    fn add_child(
+    fn add_next_agent(
         &mut self,
         parent_name: &str,
         child_name: &str,
@@ -496,6 +480,7 @@ impl AgentSystem {
 #[cfg(test)]
 mod tests {
     use simple_logger::SimpleLogger;
+    use std::env;
     use std::time::Duration;
     use std::{error::Error, sync::Arc};
 
@@ -503,9 +488,11 @@ mod tests {
     use serde_json::Value;
 
     use crate::llm::ollama::client::Ollama;
+    use crate::llm::tupleleapai::client::Tupleleap;
     use crate::{
         agent::ConversationalAgentBuilder, memory::SimpleMemory, prompt_args, tools::Tool,
     };
+    use leap_connect::v1::api::Client as leap_client;
 
     use super::*;
 
@@ -541,10 +528,10 @@ mod tests {
         let mut agent_system = AgentSystem::new();
         agent_system
             .add_agent("A", create_agent())
-            .add_child("A", "B", create_agent())
-            .add_child("A", "C", create_agent())
-            .add_child("B", "D", create_agent())
-            .add_child("C", "D", create_agent())
+            .add_next_agent("A", "B", create_agent())
+            .add_next_agent("A", "C", create_agent())
+            .add_next_agent("B", "D", create_agent())
+            .add_next_agent("C", "D", create_agent())
             .build();
 
         let mut exp_nodes_after: HashMap<String, HashSet<String>> = HashMap::new();
@@ -572,9 +559,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_system_start_single() {
-        SimpleLogger::new().init().unwrap();
+        //  SimpleLogger::new().init().unwrap();
 
-        let llm = Ollama::default().with_model("llama3");
+        // let llm = Ollama::default().with_model("llama3");
+        let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        let llm = Tupleleap::new(client, "mistral".into());
         // memory is not required for this test.
         // let memory = SimpleMemory::new();
         let tool_calc = Calc {};
@@ -587,7 +576,7 @@ mod tests {
         // };
 
         let mut wrapper = AgentSystem::new();
-        let agent_system = wrapper
+        let agent_system: &mut AgentSystem = wrapper
             .add_agent("A", Box::new(agent))
             .build()
             .start(prompt_args! {
@@ -606,15 +595,17 @@ mod tests {
         let mut agent_system = AgentSystem::new();
         agent_system
             .add_agent("A", create_agent())
-            .add_child("A", "B", create_agent())
-            .add_child("A", "C", create_agent())
-            .add_child("B", "D", create_agent())
-            .add_child("C", "D", create_agent())
+            .add_next_agent("A", "B", create_agent())
+            .add_next_agent("A", "C", create_agent())
+            .add_next_agent("B", "D", create_agent())
+            .add_next_agent("C", "D", create_agent())
             .build()
             .start(prompt_args! {
-                "input" => "Hi from Bangalore, what is happening today?",
+                "input" => "Hi from Bangalore, what is happening today?", // prompt...
             })
             .await;
+        // API for human intervention// Tupelead
+        // agent_system.
         println!("Pending tasks {}", agent_system.pending_count());
         agent_system.wait().await;
         assert_eq!(0, agent_system.pending_count());
