@@ -106,11 +106,16 @@ impl Agent for ConversationalAgent {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::{error::Error, sync::Arc};
 
     use async_trait::async_trait;
+    use leap_connect::v1::api::Client as leap_client;
     use serde_json::Value;
+    use simple_logger::SimpleLogger;
 
+    use crate::llm::ollama::client::Ollama;
+    use crate::llm::tupleleapai::client::Tupleleap;
     use crate::{
         agent::{chat::builder::ConversationalAgentBuilder, executor::AgentExecutor},
         chain::chain_trait::Chain,
@@ -136,9 +141,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_invoke_agent() {
-        let llm = OpenAI::default().with_model(OpenAIModel::Gpt4.to_string());
+        SimpleLogger::new().init().unwrap();
+        // let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        // let llm = Tupleleap::new(client, "mistral".into());
+        // let llm: OpenAI<async_openai::config::OpenAIConfig> = OpenAI::default().with_model(OpenAIModel::Gpt4.to_string());
+        let llm = Ollama::default().with_model("llama3");
         let memory = SimpleMemory::new();
         let tool_calc = Calc {};
         let agent = ConversationalAgentBuilder::new()
@@ -146,21 +154,21 @@ mod tests {
             .build(llm)
             .unwrap();
         let input_variables = prompt_args! {
-            "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
+            "input" => "hola,I am newbie and I am 10 years old. I am studying computer science",
         };
         let executor = AgentExecutor::from_agent(agent).with_memory(memory.into());
         match executor.invoke(input_variables).await {
             Ok(result) => {
-                println!("Result: {:?}", result);
+                println!("Result A: {:?}", result);
             }
             Err(e) => panic!("Error invoking LLMChain: {:?}", e),
         }
         let input_variables = prompt_args! {
-            "input" => "cuanta es la edad de luis +10 y que estudia",
+            "input" => "what is my age after 15 years",
         };
         match executor.invoke(input_variables).await {
             Ok(result) => {
-                println!("Result: {:?}", result);
+                println!("Result B: {:?}", result);
             }
             Err(e) => panic!("Error invoking LLMChain: {:?}", e),
         }
