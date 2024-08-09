@@ -71,7 +71,7 @@ struct AgentState {
     before_name: HashSet<String>,
     after_name: HashSet<String>,
     metrics: AgentMetrics,
-    agent: Option<Box<ConversationalAgent>>,
+    agent: Option<Box<dyn Agent>>,
 }
 
 struct AgentActor {}
@@ -294,7 +294,7 @@ impl Actor for AgentActor {
             metrics: AgentMetrics {
                 state_change_count: 0,
             },
-            agent: None,
+            agent: args.agent,
         })
     }
 
@@ -561,11 +561,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_system_start_single() {
-        //  SimpleLogger::new().init().unwrap();
+        SimpleLogger::new().init().unwrap();
 
-        // let llm = Ollama::default().with_model("llama3");
-        let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
-        let llm = Tupleleap::new(client, "mistral".into());
+        let llm = Ollama::default().with_model("llama3");
+        // let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        // let llm = Tupleleap::new(client, "mistral".into());
         // memory is not required for this test.
         // let memory = SimpleMemory::new();
         let tool_calc = Calc {};
