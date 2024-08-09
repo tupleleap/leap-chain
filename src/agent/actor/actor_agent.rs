@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::task::JoinError;
 
 use crate::{
-    agent::{self, Agent, AgentExecutor, ConversationalAgent},
+    agent::{self, Agent, AgentExecutor, AgentExecutor2, ConversationalAgent},
     chain::Chain,
     prompt_args,
 };
@@ -116,23 +116,25 @@ impl AgentActor {
                     log::debug!("Actor {}: All the before actors not completed", name);
                     return None;
                 }
-                if state.agent.is_some() {
-                    let ag = state.agent.as_ref().unwrap().clone();
-                    let ag2 = *ag;
-
-                    let executor: AgentExecutor<ConversationalAgent> =
-                        AgentExecutor::from_agent(ag2.into());
-
+                if let Some(agent) = state.agent.as_ref() {
+                    let executor = AgentExecutor2::from_agent(agent.as_ref() as &dyn Agent);
                     match executor.invoke(input.clone()).await {
                         Ok(result) => {
-                            println!("Result: {:?}", result);
+                            println!("Result A: {:?}", result);
+                            log::debug!(
+                                "Processing complete for Actor {}, Initimating next actors",
+                                name
+                            );
+                            self.start_next_actors(&name, &result, &state.after_name);
+                            log::debug!("Stopping Actor {}", name);
+                            myself.stop(Some("pipeline completed".into()));
+                            return None;
                         }
                         Err(e) => panic!("Error invoking LLMChain: {:?}", e),
                     }
                 } else {
                     log::info!("WARNING : No agent present");
                 }
-
                 log::debug!(
                     "Processing complete for Actor {}, Initimating next actors",
                     name

@@ -4,6 +4,9 @@ pub use agent::*;
 mod executor;
 pub use executor::*;
 
+mod executor2;
+pub use executor2::*;
+
 mod chat;
 pub use chat::*;
 
