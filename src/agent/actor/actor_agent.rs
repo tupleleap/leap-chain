@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::task::JoinError;
 
 use crate::{
-    agent::{self, Agent, AgentExecutor, AgentExecutor2, ConversationalAgent},
+    agent::{self, Agent, AgentExecutor, AgentExecutorReference, ConversationalAgent},
     chain::Chain,
     prompt_args,
 };
@@ -117,7 +117,7 @@ impl AgentActor {
                     return None;
                 }
                 if let Some(agent) = state.agent.as_ref() {
-                    let executor = AgentExecutor2::from_agent(agent.as_ref() as &dyn Agent);
+                    let executor = AgentExecutorReference::from_agent(agent.as_ref() as &dyn Agent);
                     match executor.invoke(input.clone()).await {
                         Ok(result) => {
                             println!("Result A: {:?}", result);
@@ -604,11 +604,13 @@ mod tests {
             .unwrap();
 
         let suffix = r#"Reformat the input to a readable format. Insert a relavant picture if needed. Do not end with a question.
+        Make sure there is an introduction and conclusion. Restrict the number of words to 500
         Here is the user's input (ensure it is in text format with proper formatting):
 
 {{input}}"#;
+        let tool_getty_images = GettyImageReader {};
         let agent_b: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
-            .tools(&[Arc::new(Calc {})])
+            .tools(&[Arc::new(tool_getty_images)])
             .suffix(suffix.to_string())
             .build(llm.clone())
             .unwrap();
@@ -635,9 +637,9 @@ mod tests {
         let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
         let llm = Tupleleap::new(client, "mistral".into());
         // memory is not required for this test.
-        let tool_getty_images = GettyImageReader {};
+        let tool_calc = Calc {};
         let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
-            .tools(&[Arc::new(tool_getty_images)])
+            .tools(&[Arc::new(tool_calc)])
             .build(llm)
             .unwrap();
 

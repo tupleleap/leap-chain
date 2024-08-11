@@ -18,14 +18,14 @@ use crate::{
 
 use super::{agent::Agent, AgentError};
 
-pub struct AgentExecutor2<'a> {
+pub struct AgentExecutorReference<'a> {
     agent: &'a dyn Agent,
     max_iterations: Option<i32>,
     break_if_error: bool,
     pub memory: Option<Arc<Mutex<dyn BaseMemory>>>,
 }
 
-impl<'a> AgentExecutor2<'a> {
+impl<'a> AgentExecutorReference<'a> {
     pub fn from_agent(agent: &'a dyn Agent) -> Self {
         Self {
             agent,
@@ -34,14 +34,6 @@ impl<'a> AgentExecutor2<'a> {
             memory: None,
         }
     }
-    // pub fn from_agent(agent: Box<dyn Agent>) -> Self {
-    //     Self {
-    //         agent,
-    //         max_iterations: Some(10),
-    //         break_if_error: false,
-    //         memory: None,
-    //     }
-    // }
 
     pub fn with_max_iterations(mut self, max_iterations: i32) -> Self {
         self.max_iterations = Some(max_iterations);
@@ -69,7 +61,7 @@ impl<'a> AgentExecutor2<'a> {
 }
 
 #[async_trait]
-impl<'a> Chain for AgentExecutor2<'a> {
+impl<'a> Chain for AgentExecutorReference<'a> {
     async fn call(&self, input_variables: PromptArgs) -> Result<GenerateResult, ChainError> {
         let mut input_variables = input_variables.clone();
         let name_to_tools = self.get_name_to_tools();
