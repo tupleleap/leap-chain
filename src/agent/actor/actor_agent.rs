@@ -34,7 +34,7 @@ enum ActorMessage {
     Success(String),
 
     /// Actor failed due to an error
-    Failed(String),
+    Failed(String, HashMap<String, Value>),
 
     /// Metrics of the Actor
     SendMetrics(RpcReplyPort<AgentMetrics>),
@@ -252,7 +252,7 @@ impl Actor for ControlAgent {
                     if !state.before_name.remove(from) {
                         log::error!("Attempting to remove {} from before_name, which is already removed for actor {} ", from, name);
                     }
-                    log::info!("Result of agent system is {:?}", result);
+                    log::info!("Result of agent system from {:?} is {:?}", from, result);
                     if state.before_name.is_empty() {
                         log::debug!("Stopping Actor {}", name);
                         myself.stop(Some("pipeline completed".into()));
@@ -499,6 +499,36 @@ mod tests {
     use super::*;
 
     #[derive(Clone)]
+    struct WikiReader {}
+
+    #[async_trait]
+    impl Tool for WikiReader {
+        fn name(&self) -> String {
+            "WikiReader".to_string()
+        }
+        fn description(&self) -> String {
+            "Fetch the latest data from Wikipedia".to_string()
+        }
+        async fn run(&self, _input: Value) -> Result<String, Box<dyn Error>> {
+            Ok("result from wikipedia".to_string())
+        }
+    }
+    #[derive(Clone)]
+    struct GettyImageReader {}
+
+    #[async_trait]
+    impl Tool for GettyImageReader {
+        fn name(&self) -> String {
+            "GettyImageReader".to_string()
+        }
+        fn description(&self) -> String {
+            "Fetch image links from getty".to_string()
+        }
+        async fn run(&self, _input: Value) -> Result<String, Box<dyn Error>> {
+            Ok("result of GettyImageReader".to_string())
+        }
+    }
+    #[derive(Clone)]
     struct Calc {}
 
     #[async_trait]
@@ -560,29 +590,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_agent_system_start_multiple_actual() {
+        SimpleLogger::new().init().unwrap();
+        let llm = Ollama::default().with_model("llama3");
+        // ## Uncomment the below lines to use tuple leap client.
+        // let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        // let llm = Tupleleap::new(client, "mistral".into());
+
+        let wikipedia_reader = WikiReader {};
+        let agent_a: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
+            .tools(&[Arc::new(wikipedia_reader)])
+            .build(llm.clone())
+            .unwrap();
+
+        let suffix = r#"Reformat the input to a readable format. Insert a relavant picture if needed. Do not end with a question.
+        Here is the user's input (ensure it is in text format with proper formatting):
+
+{{input}}"#;
+        let agent_b: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
+            .tools(&[Arc::new(Calc {})])
+            .suffix(suffix.to_string())
+            .build(llm.clone())
+            .unwrap();
+
+        let mut wrapper = AgentSystem::new();
+        let agent_system: &mut AgentSystem = wrapper
+            .add_agent("A", Box::new(agent_a))
+            .add_next_agent("A", "Formatter", Box::new(agent_b))
+            .build()
+            .start(prompt_args! {
+                "input" => "I need to write an note on Archimedes for a project. It should highlight his life and acheivements",
+            })
+            .await;
+        println!("Pending tasks {}", agent_system.pending_count());
+        agent_system.wait().await;
+        assert_eq!(0, agent_system.pending_count());
+    }
+
+    #[tokio::test]
     async fn test_agent_system_start_single() {
         SimpleLogger::new().init().unwrap();
 
-        let llm = Ollama::default().with_model("llama3");
-        // let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
-        // let llm = Tupleleap::new(client, "mistral".into());
+        // let llm = Ollama::default().with_model("llama3");
+        let client = leap_client::new(env::var("TUPLELEAP_AI_API_KEY").unwrap().to_string());
+        let llm = Tupleleap::new(client, "mistral".into());
         // memory is not required for this test.
-        // let memory = SimpleMemory::new();
-        let tool_calc = Calc {};
+        let tool_getty_images = GettyImageReader {};
         let agent: crate::agent::ConversationalAgent = ConversationalAgentBuilder::new()
-            .tools(&[Arc::new(tool_calc)])
+            .tools(&[Arc::new(tool_getty_images)])
             .build(llm)
             .unwrap();
-        // let input_variables = prompt_args! {
-        //     "input" => "hola,Me llamo luis, y tengo 10 anos, y estudio Computer scinence",
-        // };
 
         let mut wrapper = AgentSystem::new();
         let agent_system: &mut AgentSystem = wrapper
             .add_agent("A", Box::new(agent))
             .build()
             .start(prompt_args! {
-                "input" => "Hi from Bangalore, And what date is today",
+                "input" => "Describe the life of archimedes",
             })
             .await;
         println!("Pending tasks {}", agent_system.pending_count());
