@@ -79,8 +79,14 @@ ollama-rs = { version = "0.1.9", optional = true, features = [
 leap-connect = { git = "https://github.com/tupleleap/leap-connect.git", version = "1.0.0" }
 # Enable this for development purposes.
 # leap-connect = { path = "../leap-connect" }
+ractor = "0.10"
+simple_logger = "5.0.0"
+# tracing-glog = "0.4"
+# tracing-subscriber = { version = "0.3", features = ["env-filter"]}
+# tracing-test = "0.2"
+# backtrace = "0.3"
 [features]
-default = []
+default = ["ollama"]
 postgres = ["pgvector", "sqlx", "uuid"]
 tree-sitter = [
     "cc",

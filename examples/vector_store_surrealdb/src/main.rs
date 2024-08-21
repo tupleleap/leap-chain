@@ -1,6 +1,6 @@
 // To run this example execute: `cargo run` in the folder.
 
-use langchain_rust::{
+use leap_chain::{
     embedding::openai::openai_embedder::OpenAiEmbedder,
     schemas::Document,
     vectorstore::{surrealdb::StoreBuilder, VecStoreOptions, VectorStore},

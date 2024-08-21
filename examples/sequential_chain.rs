@@ -1,9 +1,7 @@
+use leap_chain::llm::tupleleapai::client::Tupleleap;
 use leap_chain::{
     chain::{Chain, LLMChainBuilder},
-    llm::{
-        client::Tupleleap,
-        openai::{OpenAI, OpenAIModel},
-    },
+    llm::openai::{OpenAI, OpenAIModel},
     prompt::HumanMessagePromptTemplate,
     prompt_args, sequential_chain, template_jinja2,
 };

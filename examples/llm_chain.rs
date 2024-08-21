@@ -4,14 +4,14 @@ use leap_chain::{
     chain::{Chain, LLMChainBuilder},
     fmt_message, fmt_placeholder, fmt_template,
     language_models::llm::LLM,
-    llm::client::Tupleleap,
-    message_formatter,
+    llm, message_formatter,
     prompt::HumanMessagePromptTemplate,
     prompt_args,
     schemas::messages::Message,
     template_fstring,
 };
 use leap_connect::v1::api::Client as leap_client;
+use llm::tupleleapai::client::Tupleleap;
 
 #[tokio::main]
 async fn main() {

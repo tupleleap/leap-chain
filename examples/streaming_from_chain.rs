@@ -1,10 +1,11 @@
 use std::env;
 
 use futures::StreamExt;
+use leap_chain::llm::tupleleapai::client::Tupleleap;
 use leap_chain::{
     chain::{Chain, LLMChainBuilder},
     fmt_message, fmt_template,
-    llm::{client::Tupleleap, openai::OpenAI},
+    llm::openai::OpenAI,
     message_formatter,
     prompt::HumanMessagePromptTemplate,
     prompt_args,
@@ -29,7 +30,7 @@ async fn main() {
 
     let chain = LLMChainBuilder::new()
         .prompt(prompt)
-        .llm(llm .clone())
+        .llm(llm.clone())
         .build()
         .unwrap();
 
